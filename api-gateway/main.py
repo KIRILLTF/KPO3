@@ -1,5 +1,6 @@
-import os
+# api_gateway/main.py
 
+import os
 from fastapi import FastAPI, Request, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -7,7 +8,9 @@ import httpx
 
 app = FastAPI(title="API Gateway", version="0.1.0")
 
-# Адреса ваших сервисов (можно переопределить через ENV)
+# Если ваш каталог называется api-gateway, то придётся запускать
+#   uvicorn main:app --app-dir api-gateway ...
+# Или лучше переименовать папку в api_gateway
 ORDER_SERVICE_URL = os.getenv("ORDER_SERVICE_URL", "http://localhost:8002")
 PAYMENT_SERVICE_URL = os.getenv("PAYMENT_SERVICE_URL", "http://localhost:8001")
 
@@ -33,15 +36,12 @@ class PaymentTopUp(BaseModel):
     "/orders",
     dependencies=[Depends(get_user_id_header)],
     response_model=dict,
-    summary="Create a new order"
+    summary="Create a new order",
 )
 async def create_order(
     order: OrderCreate,
     user_id: str = Depends(get_user_id_header),
 ):
-    """
-    Создать новый заказ.
-    """
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             f"{ORDER_SERVICE_URL}/orders",
@@ -56,46 +56,45 @@ async def create_order(
     "/orders/{path:path}",
     methods=["GET", "PUT", "PATCH", "DELETE"],
     dependencies=[Depends(get_user_id_header)],
-    summary="Proxy all other /orders/* calls"
+    summary="Proxy all other /orders/* calls",
 )
 async def orders_proxy(
     path: str,
     request: Request,
     user_id: str = Depends(get_user_id_header),
 ):
-    """
-    Прокси для остальных операций над заказами (GET/PUT/PATCH/DELETE).
-    """
-    url = f"{ORDER_SERVICE_URL}/{path}"
+    url = f"{ORDER_SERVICE_URL}/orders/{path}"
     async with httpx.AsyncClient() as client:
-        resp = await client.request(
-            method=request.method,
-            url=url,
-            headers={"X-User-Id": user_id},
-            params=request.query_params,
-            content=await request.body(),
-            timeout=10.0,
-        )
+        # для GET/DELETE — body не нужен, для остальных передаём JSON
+        kwargs = {
+            "method": request.method,
+            "url": url,
+            "headers": {"X-User-Id": user_id},
+            "params": request.query_params,
+            "timeout": 10.0,
+        }
+        if request.method in ("POST", "PUT", "PATCH"):
+            kwargs["json"] = await request.json()
+        resp = await client.request(**kwargs)
+
+    # пытаемся читать JSON, иначе оставляем текст
     try:
-        data = resp.json()
+        content = resp.json()
     except ValueError:
-        data = resp.text
-    return JSONResponse(status_code=resp.status_code, content=data)
+        content = resp.text
+    return JSONResponse(status_code=resp.status_code, content=content)
 
 
 @app.post(
     "/payments",
     dependencies=[Depends(get_user_id_header)],
     response_model=dict,
-    summary="Top-up a user’s account"
+    summary="Top-up a user’s account",
 )
 async def create_topup(
     topup: PaymentTopUp,
     user_id: str = Depends(get_user_id_header),
 ):
-    """
-    Пополнить баланс пользователя.
-    """
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             f"{PAYMENT_SERVICE_URL}/payments/top-up",
@@ -110,31 +109,31 @@ async def create_topup(
     "/payments/{path:path}",
     methods=["GET", "PUT", "PATCH", "DELETE"],
     dependencies=[Depends(get_user_id_header)],
-    summary="Proxy all other /payments/* calls"
+    summary="Proxy all other /payments/* calls",
 )
 async def payments_proxy(
     path: str,
     request: Request,
     user_id: str = Depends(get_user_id_header),
 ):
-    """
-    Прокси для остальных операций над платежами (GET/PUT/PATCH/DELETE).
-    """
-    url = f"{PAYMENT_SERVICE_URL}/{path}"
+    url = f"{PAYMENT_SERVICE_URL}/payments/{path}"
     async with httpx.AsyncClient() as client:
-        resp = await client.request(
-            method=request.method,
-            url=url,
-            headers={"X-User-Id": user_id},
-            params=request.query_params,
-            content=await request.body(),
-            timeout=10.0,
-        )
+        kwargs = {
+            "method": request.method,
+            "url": url,
+            "headers": {"X-User-Id": user_id},
+            "params": request.query_params,
+            "timeout": 10.0,
+        }
+        if request.method in ("POST", "PUT", "PATCH"):
+            kwargs["json"] = await request.json()
+        resp = await client.request(**kwargs)
+
     try:
-        data = resp.json()
+        content = resp.json()
     except ValueError:
-        data = resp.text
-    return JSONResponse(status_code=resp.status_code, content=data)
+        content = resp.text
+    return JSONResponse(status_code=resp.status_code, content=content)
 
 
 @app.get("/health", tags=["Health"], summary="Gateway health check")

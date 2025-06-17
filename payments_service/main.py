@@ -1,74 +1,111 @@
-import asyncio
-import databases
-import sqlalchemy
-import uvicorn
-from fastapi import FastAPI, HTTPException
+# payments_service/main.py
 
-from config import settings
-from models import metadata, accounts, inbox, outbox   # ← относительный импорт
-from worker import start_worker                                # фоновый воркер
+from decimal import Decimal
+from fastapi import FastAPI, Header, HTTPException
+from pydantic import BaseModel, condecimal
+from sqlalchemy import create_engine
+from databases import Database
 
-# ---------- База данных ----------
+from models import metadata, accounts
 
-DATABASE_URL = "sqlite+aiosqlite:///./payments.db"
+DATABASE_URL = "sqlite:///./payments.db"
 
-database = databases.Database(DATABASE_URL)
-engine = sqlalchemy.create_engine("sqlite:///payments.db")
+# Создание таблиц в SQLite
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 metadata.create_all(engine)
 
-# ---------- FastAPI ----------
+# Настройка асинхронного доступа к БД
+database = Database(DATABASE_URL)
 
-app = FastAPI(title="Payments Service")
+app = FastAPI()
 
-
-# ---------- Жизненный цикл ----------
 
 @app.on_event("startup")
-async def startup() -> None:
+async def startup():
     await database.connect()
-    # Запускаем воркер, который читает payment_requests
-    asyncio.create_task(start_worker())
 
 
 @app.on_event("shutdown")
-async def shutdown() -> None:
+async def shutdown():
     await database.disconnect()
 
 
-# ---------- REST-эндпоинты ----------
-
-@app.post("/accounts")
-async def create_account(user_id: int):
-    acc = await database.fetch_one(accounts.select().where(accounts.c.user_id == user_id))
-    if acc:
-        return acc
-    await database.execute(accounts.insert().values(user_id=user_id, balance=0))
-    return {"user_id": user_id, "balance": 0.0}
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
 
 
-@app.post("/accounts/{user_id}/top-up")
-async def top_up(user_id: int, amount: float):
-    acc = await database.fetch_one(accounts.select().where(accounts.c.user_id == user_id))
-    if not acc:
-        raise HTTPException(404, detail="Account not found")
+# --- Pydantic-схемы ---
+
+class TopUp(BaseModel):
+    # Decimal с двумя знаками после запятой
+    amount: condecimal(max_digits=12, decimal_places=2)
+
+
+class AccountOut(BaseModel):
+    user_id: int
+    balance: Decimal
+
+    class Config:
+        orm_mode = True
+
+
+# --- Эндпоинты ---
+
+@app.post("/payments/accounts", response_model=AccountOut)
+async def create_account(
+    x_user_id: int = Header(..., alias="X-User-Id"),
+):
+    existing = await database.fetch_one(
+        accounts.select().where(accounts.c.user_id == x_user_id)
+    )
+    if existing:
+        return {"user_id": x_user_id, "balance": existing["balance"]}
+    # создаём с нулевым балансом
+    await database.execute(
+        accounts.insert().values(user_id=x_user_id, balance=Decimal("0.00"))
+    )
+    return {"user_id": x_user_id, "balance": Decimal("0.00")}
+
+
+@app.post("/payments/accounts/{user_id}/top-up", response_model=AccountOut)
+async def top_up(
+    user_id: int,
+    body: TopUp,
+    x_user_id: int = Header(..., alias="X-User-Id"),
+):
+    if user_id != x_user_id:
+        raise HTTPException(status_code=403, detail="Нельзя пополнить чужой счёт")
+
+    row = await database.fetch_one(
+        accounts.select().where(accounts.c.user_id == user_id)
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Счёт не найден")
+
+    # body.amount уже Decimal, складываем с балансом из БД
+    new_balance = row["balance"] + body.amount
 
     await database.execute(
         accounts.update()
         .where(accounts.c.user_id == user_id)
-        .values(balance=acc["balance"] + amount)
+        .values(balance=new_balance)
     )
-    return {"user_id": user_id, "balance": acc["balance"] + amount}
+    return {"user_id": user_id, "balance": new_balance}
 
 
-@app.get("/accounts/{user_id}")
-async def get_balance(user_id: int):
-    acc = await database.fetch_one(accounts.select().where(accounts.c.user_id == user_id))
-    if not acc:
-        raise HTTPException(404, detail="Account not found")
-    return acc
+@app.get("/payments/accounts/{user_id}", response_model=AccountOut)
+async def get_balance(
+    user_id: int,
+    x_user_id: int = Header(..., alias="X-User-Id"),
+):
+    if user_id != x_user_id:
+        raise HTTPException(status_code=403, detail="Нельзя смотреть чужой счёт")
 
+    row = await database.fetch_one(
+        accounts.select().where(accounts.c.user_id == user_id)
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Счёт не найден")
 
-# ---------- Точка входа (при локальном запуске) ----------
-
-if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8002)
+    return {"user_id": user_id, "balance": row["balance"]}
