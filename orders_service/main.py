@@ -1,15 +1,20 @@
 # orders_service/main.py
 
-import json
-from datetime import datetime
-
 from fastapi import FastAPI, Header, HTTPException
-from sqlalchemy import insert, select
+from pydantic import BaseModel
+from datetime import datetime
+from sqlalchemy import create_engine
+from databases import Database
 
-from database import database
-from models import metadata, orders, outbox  # outbox — ваша таблица outbox
-from schemas import OrderCreate, Order       # pydantic-схемы
+from models import metadata, orders
 
+DATABASE_URL = "sqlite:///./orders.db"
+
+# создаём SQLite-файл и таблицы, если их нет
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+metadata.create_all(engine)
+
+database = Database(DATABASE_URL)
 app = FastAPI()
 
 
@@ -28,40 +33,61 @@ async def health():
     return {"status": "ok"}
 
 
-@app.post("/orders", response_model=Order)
+class OrderCreate(BaseModel):
+    amount: float
+    description: str
+
+
+class OrderOut(BaseModel):
+    id: int
+    user_id: int
+    amount: float
+    description: str
+    status: str
+    created_at: datetime
+
+
+@app.post("/orders", response_model=OrderOut)
 async def create_order(
-    order: OrderCreate,
-    x_user_id: int = Header(..., alias="X-User-Id")
+    body: OrderCreate,
+    x_user_id: int = Header(..., alias="X-User-Id"),
 ):
-    # 1) создаём запись в orders
-    query_order = insert(orders).values(
+    query = orders.insert().values(
         user_id=x_user_id,
-        amount=order.amount,
-        description=order.description,
-        status="NEW",
-        created_at=datetime.utcnow(),
+        amount=body.amount,
+        description=body.description,
+        # status и created_at заполнятся по умолчанию на стороне БД
     )
-    order_id = await database.execute(query_order)
+    order_id = await database.execute(query)
+    if not order_id:
+        raise HTTPException(status_code=500, detail="Не удалось создать заказ")
 
-    # 2) пишем событие в outbox (with event_type!)
-    query_outbox = insert(outbox).values(
-        aggregate_id=order_id,
-        event_type="order_created",   # ← ОБЯЗАТЕЛЬНОЕ поле
-        payload=json.dumps({
-            "order_id": order_id,
-            "user_id": x_user_id,
-            "amount": order.amount,
-            "description": order.description,
-        }),
-        created_at=datetime.utcnow(),
+    row = await database.fetch_one(
+        orders.select().where(orders.c.id == order_id)
     )
-    await database.execute(query_outbox)
+    return row
 
-    # 3) возвращаем клиенту
-    return Order(
-        id=order_id,
-        user_id=x_user_id,
-        amount=order.amount,
-        description=order.description,
-        status="NEW",
+
+@app.get("/orders/{order_id}", response_model=OrderOut)
+async def get_order(
+    order_id: int,
+    x_user_id: int = Header(..., alias="X-User-Id"),
+):
+    row = await database.fetch_one(
+        orders.select().where(orders.c.id == order_id)
     )
+    if not row:
+        raise HTTPException(status_code=404, detail="Заказ не найден")
+    if row["user_id"] != x_user_id:
+        raise HTTPException(status_code=403, detail="Это не ваш заказ")
+    return row
+
+
+@app.get("/orders", response_model=list[OrderOut])
+async def list_orders(
+    x_user_id: int = Header(..., alias="X-User-Id"),
+):
+    rows = await database.fetch_all(
+        orders.select().where(orders.c.user_id == x_user_id)
+    )
+    return rows

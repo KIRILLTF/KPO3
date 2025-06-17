@@ -1,24 +1,26 @@
 # orders_service/models.py
-import sqlalchemy as sa
-import sqlalchemy.dialects.sqlite as sqlite
 
-metadata = sa.MetaData()
-
-orders = sa.Table(
-    "orders",
-    metadata,
-    sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
-    sa.Column("user_id", sa.Integer, nullable=False),
-    sa.Column("amount", sa.Float, nullable=False),
-    sa.Column("description", sa.String, nullable=True),
-    sa.Column("status", sa.String, default="NEW", nullable=False),
+from sqlalchemy import (
+    MetaData, Table, Column,
+    Integer, Numeric, String,
+    DateTime, func
 )
 
-outbox = sa.Table(
-    "outbox",
+metadata = MetaData()
+
+orders = Table(
+    "orders",
     metadata,
-    sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
-    sa.Column("event_type", sa.String, nullable=False),
-    sa.Column("payload", sqlite.JSON, nullable=False),
-    sa.Column("processed", sa.Boolean, default=False, nullable=False),
+    Column("id", Integer, primary_key=True),
+    Column("user_id", Integer, nullable=False),
+    Column("amount", Numeric(12, 2), nullable=False),
+    Column("description", String(255), nullable=False),
+    Column("status", String(50), nullable=False, server_default="NEW"),
+    # теперь БД сама подставит текущее время в created_at
+    Column(
+        "created_at",
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    ),
 )
