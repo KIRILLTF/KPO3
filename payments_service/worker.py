@@ -60,12 +60,3 @@ async def start_worker():
                     aio_pika.Message(body=json.dumps(result).encode()),
                     routing_key="payment_results",
                 )
-
-# orders_service/worker.py
-async def start_worker(database):
-    """
-    Пустая «заглушка», чтобы main.py смог импортировать функцию.
-    В реальном проекте здесь бы крутилась логика чтения из outbox
-    и публикации сообщений в RabbitMQ.
-    """
-    pass

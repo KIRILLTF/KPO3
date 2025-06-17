@@ -5,8 +5,8 @@ import uvicorn
 from fastapi import FastAPI, HTTPException
 
 from config import settings
-from .models import metadata, accounts, inbox, outbox   # ← относительный импорт
-from .worker import start_worker                                # фоновый воркер
+from models import metadata, accounts, inbox, outbox   # ← относительный импорт
+from worker import start_worker                                # фоновый воркер
 
 # ---------- База данных ----------
 
