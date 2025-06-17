@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+databases[sqlite]
+SQLAlchemy
+pydantic
+python-dotenv
+aio-pika
+httpx
+pydantic-settings

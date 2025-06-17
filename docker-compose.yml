@@ -1,0 +1,51 @@
+services:
+
+  broker:
+    image: rabbitmq:3-management
+    container_name: kpo3-broker
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "status"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+
+  orders-service:
+    build:
+      context: orders_service
+    container_name: kpo3-orders_service
+    env_file:
+      - orders_service/.env
+    ports:
+      - "8001:8001"
+    depends_on:
+      broker:
+        condition: service_healthy
+
+  payments-service:
+    build:
+      context: payments_service
+    container_name: kpo3-payments_service
+    env_file:
+      - payments_service/.env
+    ports:
+      - "8002:8002"
+    depends_on:
+      broker:
+        condition: service_healthy
+
+  api-gateway:
+    build:
+      context: ./api-gateway
+    container_name: kpo3-api-gateway
+    env_file:
+      - ./api-gateway/.env
+    ports:
+      - "8000:8000"
+    depends_on:
+      orders-service:
+        condition: service_started
+      payments-service:
+        condition: service_started
