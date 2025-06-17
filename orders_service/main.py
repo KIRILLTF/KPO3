@@ -1,70 +1,118 @@
 # orders_service/main.py
 
-from fastapi import FastAPI, Header, HTTPException
-from pydantic import BaseModel
+import os
+import json
+import asyncio
+from decimal import Decimal
 from datetime import datetime
-from sqlalchemy import create_engine
+from typing import Optional
+
+from fastapi import FastAPI, Header, HTTPException
+from pydantic import BaseModel, condecimal, ConfigDict
 from databases import Database
+from sqlalchemy import (
+    create_engine, MetaData, Table, Column,
+    Integer, Numeric, String, DateTime, func, select
+)
+import aio_pika
 
 from models import metadata, orders
 
 DATABASE_URL = "sqlite:///./orders.db"
+RABBIT_URL   = os.getenv("RABBITMQ_URL", "amqp://guest:guest@broker:5672/")
 
-# создаём SQLite-файл и таблицы, если их нет
+# Настройка БД
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 metadata.create_all(engine)
+db = Database(DATABASE_URL)
 
-database = Database(DATABASE_URL)
-app = FastAPI()
-
-
-@app.on_event("startup")
-async def startup():
-    await database.connect()
+app = FastAPI(title="Orders Service")
 
 
-@app.on_event("shutdown")
-async def shutdown():
-    await database.disconnect()
-
-
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
-
-
-class OrderCreate(BaseModel):
-    amount: float
+# Pydantic-схемы
+class CreateOrder(BaseModel):
+    amount: condecimal(max_digits=12, decimal_places=2)
     description: str
 
 
 class OrderOut(BaseModel):
     id: int
     user_id: int
-    amount: float
-    description: str
+    amount: Decimal
+    description: Optional[str]
     status: str
     created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# Публикуем запрос на оплату
+async def publish_payment_request(order_id: int, user_id: int, amount: Decimal):
+    conn = await aio_pika.connect_robust(RABBIT_URL)
+    ch = await conn.channel()
+    await ch.declare_queue("payment_requests", durable=True)
+    await ch.default_exchange.publish(
+        aio_pika.Message(
+            body=json.dumps({
+                "order_id": order_id,
+                "user_id": user_id,
+                "amount": str(amount)
+            }).encode()
+        ),
+        routing_key="payment_requests",
+    )
+    await conn.close()
+
+
+# Слушаем результаты оплат
+async def consume_payment_results():
+    conn = await aio_pika.connect_robust(RABBIT_URL)
+    ch = await conn.channel()
+    q = await ch.declare_queue("payment_results", durable=True)
+    async with q.iterator() as it:
+        async for msg in it:
+            async with msg.process():
+                data = json.loads(msg.body)
+                await db.execute(
+                    orders.update()
+                    .where(orders.c.id == data["order_id"])
+                    .values(status=data["status"])
+                )
+    await conn.close()
+
+
+@app.on_event("startup")
+async def startup():
+    await db.connect()
+    # гарантируем наличие очереди для результатов
+    conn = await aio_pika.connect_robust(RABBIT_URL)
+    ch = await conn.channel()
+    await ch.declare_queue("payment_results", durable=True)
+    await conn.close()
+    # запускаем consumer
+    asyncio.create_task(consume_payment_results())
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    await db.disconnect()
 
 
 @app.post("/orders", response_model=OrderOut)
 async def create_order(
-    body: OrderCreate,
+    payload: CreateOrder,
     x_user_id: int = Header(..., alias="X-User-Id"),
 ):
-    query = orders.insert().values(
-        user_id=x_user_id,
-        amount=body.amount,
-        description=body.description,
-        # status и created_at заполнятся по умолчанию на стороне БД
+    order_id = await db.execute(
+        orders.insert().values(
+            user_id=x_user_id,
+            amount=payload.amount,
+            description=payload.description,
+            status="NEW",
+        )
     )
-    order_id = await database.execute(query)
-    if not order_id:
-        raise HTTPException(status_code=500, detail="Не удалось создать заказ")
-
-    row = await database.fetch_one(
-        orders.select().where(orders.c.id == order_id)
-    )
+    await publish_payment_request(order_id, x_user_id, payload.amount)
+    row = await db.fetch_one(select(orders).where(orders.c.id == order_id))
     return row
 
 
@@ -73,21 +121,7 @@ async def get_order(
     order_id: int,
     x_user_id: int = Header(..., alias="X-User-Id"),
 ):
-    row = await database.fetch_one(
-        orders.select().where(orders.c.id == order_id)
-    )
-    if not row:
-        raise HTTPException(status_code=404, detail="Заказ не найден")
-    if row["user_id"] != x_user_id:
-        raise HTTPException(status_code=403, detail="Это не ваш заказ")
+    row = await db.fetch_one(select(orders).where(orders.c.id == order_id))
+    if not row or row["user_id"] != x_user_id:
+        raise HTTPException(404, "Order not found")
     return row
-
-
-@app.get("/orders", response_model=list[OrderOut])
-async def list_orders(
-    x_user_id: int = Header(..., alias="X-User-Id"),
-):
-    rows = await database.fetch_all(
-        orders.select().where(orders.c.user_id == x_user_id)
-    )
-    return rows
