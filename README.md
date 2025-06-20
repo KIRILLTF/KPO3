@@ -1,28 +1,94 @@
+# KPO3 — простой интернет-магазин на микросервисах
 
-- **api-gateway** (порт 8000)  
-  Получает запросы `/orders/*` и `/payments/*` и переадресует их на нужный сервис.
-
-- **orders_service** (порт 8001)  
-  - `POST /orders` — создаёт заказ (статус NEW) и шлёт сообщение в очередь `payment_requests`.  
-  - `GET  /orders/{id}` — возвращает данные заказа.  
-  - `ws://…/ws/orders/{id}` — WebSocket : клиенты подписываются на статус, и как только платеж отработает, получают пуш `{ order_id, status }`.
-
-- **payments_service** (порт 8002)  
-  - `POST /payments/accounts` — создаёт аккаунт (header `X-User-Id`).  
-  - `POST /payments/accounts/{user_id}/top-up` — пополняет баланс.  
-  - `GET  /payments/accounts/{user_id}` — показывает текущий баланс.  
-  - Асинхронно слушает очередь `payment_requests`, списывает деньги и пишет результат в `payment_results`.
-
-- **RabbitMQ**  
-  Две очереди:  
-  1. `payment_requests` (Orders → Payments)  
-  2. `payment_results`  (Payments → Orders)
+Это мой учебный проект: два бэкенд-сервиса (Orders и Payments) и API-шлюз.
 
 ---
 
-## Как запустить
+##
 
-1. **Клонируйте** репозиторий и зайдите в папку:
+* **api-gateway** (порт 8000)
+  Прокси:
+
+  * `/orders/*` → Orders Service
+  * `/payments/*` → Payments Service
+
+* **orders\_service** (порт 8001)
+
+  * `POST /orders` — создаёт заказ (статус NEW) и шлёт `payment_requests` в RabbitMQ
+  * `GET  /orders/{id}` — возвращает данные заказа
+  * `ws://…/ws/orders/{id}` — WebSocket: подписка на смену статуса
+
+* **payments\_service** (порт 8002)
+
+  * `POST /payments/accounts`                     — создать счёт (header `X-User-Id`)
+  * `POST /payments/accounts/{user_id}/top-up`    — пополнить баланс
+  * `GET  /payments/accounts/{user_id}`           — посмотреть баланс
+  * Слушает `payment_requests`, списывает деньги и публикует `payment_results`
+
+* **RabbitMQ**
+
+  * `payment_requests` (Orders → Payments)
+  * `payment_results`  (Payments → Orders)
+
+---
+
+## Быстрый старт
+
+1. 
+
    ```bash
-   git clone https://github.com/<your-username>/KPO3.git
+   git clone https://github.com/<ваш-ник>/KPO3.git
    cd KPO3
+   ```
+
+3. **Запуск**:
+
+   ```bash
+   docker compose down -v
+   docker compose up --build -d
+   ```
+
+4. **Swagger**:
+
+   * API Gateway:    [http://localhost:8000/docs](http://localhost:8000/docs)
+   * Orders Service: [http://localhost:8001/docs](http://localhost:8001/docs)
+   * Payments Svс:   [http://localhost:8002/docs](http://localhost:8002/docs)
+
+---
+
+## Проверка
+
+1. **Создать счёт**
+
+   * Header: `X-User-Id: 42`
+   * `POST http://localhost:8002/payments/accounts`
+
+2. **Пополнить баланс**
+
+   * `POST http://localhost:8002/payments/accounts/42/top-up`
+
+     ```json
+     { "amount": 1000.00 }
+     ```
+
+3. **Оформить заказ**
+
+   * Header: `X-User-Id: 42`
+   * `POST http://localhost:8001/orders`
+
+     ```json
+     { "amount": 250.00, "description": "Мой первый заказ" }
+     ```
+
+4. **Подписаться на WebSocket**
+
+   * `ws://localhost:8001/ws/orders/{order_id}`
+     При изменении статуса придёт сообщение:
+
+   ```json
+   { "order_id": 123, "status": "FINISHED" }
+   ```
+
+
+
+Автор: Зайцев Кирилл Николаевич
