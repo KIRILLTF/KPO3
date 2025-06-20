@@ -37,7 +37,7 @@
 1. 
 
    ```bash
-   git clone [https://github.com/<ваш-ник>/KPO3.git](https://github.com/KIRILLTF/KPO3)
+   git clone https://github.com/KIRILLTF/KPO3
    cd KPO3
    ```
 
