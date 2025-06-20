@@ -37,11 +37,11 @@
 1. 
 
    ```bash
-   git clone https://github.com/<ваш-ник>/KPO3.git
+   git clone [https://github.com/<ваш-ник>/KPO3.git](https://github.com/KIRILLTF/KPO3)
    cd KPO3
    ```
 
-3. **Запуск**:
+2. **Запуск**:
 
    ```bash
    docker compose down -v
